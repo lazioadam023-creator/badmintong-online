@@ -4,7 +4,14 @@ import { supabase, supabaseReady } from '@/lib/supabase';
 
 type Session = { id: string; session_date: string; start_time: string; end_time: string; location: string; capacity: number; price: number; status: string };
 type Booking = { id: string; booking_code: string; session_id: string; name: string; whatsapp: string; status: string; amount: number; payment_method: string | null; proof_path: string | null; hold_expires_at: string; created_at: string };
-type Setting = { bank_name: string; bank_account: string; bank_holder: string; gopay_number: string; whatsapp_number: string };
+type Setting = {
+  bank_name: string;
+  bank_account: string;
+  bank_holder: string;
+  gopay_number: string;
+  gopay_holder: string;
+  whatsapp_number: string;
+};;
 const rupiah = (n: number) => 'Rp' + Number(n || 0).toLocaleString('id-ID');
 const dateText = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'short' });
 export default function Home() {
@@ -99,7 +106,7 @@ if (allSessionsError) {
     // Ambil pengaturan pembayaran
     const { data: st, error: settingsError } = await supabase
       .from('settings')
-      .select('bank_name,bank_account,bank_holder,gopay_number,whatsapp_number')
+      .select('bank_name,bank_account,bank_holder,gopay_number,gopay_holder,whatsapp_number')
       .limit(1)
       .maybeSingle();
 
@@ -651,7 +658,13 @@ async function addOwnerBooking() {
         </section>
       </div>
     ) : null}
-    {checkout ? <div className="modal"><section className="panel checkout"><button className="ghost close" onClick={() => setCheckout(null)}>TUTUP</button><p className="eyebrow">CHECKOUT · HOLD 10 MENIT</p><h2>{checkout.booking_code}</h2><h1>{rupiah(checkout.amount)}</h1><div className="accounts"><div><small>TRANSFER BANK</small><b>{settings?.bank_name || 'Atur di Supabase settings'}</b><strong>{settings?.bank_account || '—'}</strong><small>a.n. {settings?.bank_holder || '—'}</small></div><div><small>GOPAY</small><strong>{settings?.gopay_number || '—'}</strong></div></div><label>Metode<select value={method} onChange={e => setMethod(e.target.value)}><option value="">Pilih metode</option><option>Transfer Bank</option><option>GoPay</option></select></label><label>Nama pengirim<input value={sender} onChange={e => setSender(e.target.value)} /></label><label>Bukti pembayaran<input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setProof(e.target.files?.[0] || null)} /></label><button className="primary wide" disabled={busy} onClick={sendProof}>{busy ? 'MENGIRIM...' : 'SAYA SUDAH BAYAR — KIRIM BUKTI'}</button></section></div> : null}
+    {checkout ? <div className="modal"><section className="panel checkout"><button className="ghost close" onClick={() => setCheckout(null)}>TUTUP</button><p className="eyebrow">CHECKOUT · HOLD 10 MENIT</p><h2>{checkout.booking_code}</h2><h1>{rupiah(checkout.amount)}</h1><div className="accounts"><div><small>TRANSFER BANK</small><b>{settings?.bank_name || 'Atur di Supabase settings'}</b><strong>{settings?.bank_account || '—'}</strong><small>a.n. {settings?.bank_holder || '—'}</small></div>
+<div>
+  <small>GOPAY</small>
+  <strong>{settings?.gopay_number || '—'}</strong>
+  <small>a.n. {settings?.gopay_holder || 'Verrel Sutedja'}</small>
+</div>
+</div><label>Metode<select value={method} onChange={e => setMethod(e.target.value)}><option value="">Pilih metode</option><option>Transfer Bank</option><option>GoPay</option></select></label><label>Nama pengirim<input value={sender} onChange={e => setSender(e.target.value)} /></label><label>Bukti pembayaran<input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setProof(e.target.files?.[0] || null)} /></label><button className="primary wide" disabled={busy} onClick={sendProof}>{busy ? 'MENGIRIM...' : 'SAYA SUDAH BAYAR — KIRIM BUKTI'}</button></section></div> : null}
     {message ? <div className="toast" onClick={() => setMessage('')}>{message} ×</div> : null}
   </main>;
 }
