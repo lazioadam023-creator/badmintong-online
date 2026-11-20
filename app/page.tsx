@@ -14,6 +14,7 @@ export default function Home() {
   const [owner, setOwner] = useState(false), [email, setEmail] = useState(''), [password, setPassword] = useState('');
   const [pending, setPending] = useState<Booking[]>([]), [message, setMessage] = useState(''), [busy, setBusy] = useState(false);
   const [ownerSessions, setOwnerSessions] = useState<Session[]>([]);
+const [showArchivedSessions, setShowArchivedSessions] = useState(false);
 const [savingSession, setSavingSession] = useState(false);
 const [sessionDate, setSessionDate] = useState('');
 const [sessionStart, setSessionStart] = useState('19:00');
@@ -28,7 +29,6 @@ const [editEnd, setEditEnd] = useState('22:00');
 const [editLocation, setEditLocation] = useState('GOR Cikeruh');
 const [editCapacity, setEditCapacity] = useState('22');
 const [editPrice, setEditPrice] = useState('15000');
-const [sessionView, setSessionView] = useState<'ACTIVE' | 'ARCHIVED'>('ACTIVE');
 
 const [ownerName, setOwnerName] = useState('');
 const [ownerAmount, setOwnerAmount] = useState('15000');
@@ -67,7 +67,8 @@ const [addingOwnerBooking, setAddingOwnerBooking] = useState(false);
 const { data: allSessions, error: allSessionsError } = await supabase
   .from('sessions')
   .select('*')
-  .order('session_date', { ascending: false });
+  .order('session_date', { ascending: false })
+  .limit(100);
 
 if (allSessionsError) {
   notify('Gagal mengambil daftar sesi: ' + allSessionsError.message);
@@ -211,8 +212,58 @@ if (allSessionsError) {
     await refresh();
   }
 
-  useEffect(() => { refresh(); const t = setInterval(() => { refresh(); }, 12000); return () => clearInterval(t); }, []);
-  useEffect(() => { if (!supabase) return; supabase.auth.getSession().then(({ data }) => setOwner(!!data.session)); const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setOwner(!!s)); return () => sub.subscription.unsubscribe() }, []);
+  useEffect(() => {
+    refresh();
+    const t = setInterval(() => { refresh(); }, 12000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) return;
+    let mounted = true;
+
+    async function restoreOwner() {
+      const { data } = await supabase!.auth.getSession();
+      if (!mounted || !data.session) return;
+      const { data: isOwner, error } = await supabase!.rpc('is_owner');
+      if (!mounted) return;
+      if (error || !isOwner) {
+        setOwner(false);
+        setPending([]);
+        return;
+      }
+      setOwner(true);
+      await loadPending();
+    }
+
+    restoreOwner();
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, authSession) => {
+      if (!mounted) return;
+      if (!authSession) {
+        setOwner(false);
+        setPending([]);
+        return;
+      }
+      // Jalankan setelah callback auth selesai agar tidak mengunci proses auth.
+      setTimeout(async () => {
+        if (!mounted) return;
+        const { data: isOwner, error } = await supabase!.rpc('is_owner');
+        if (!mounted) return;
+        if (error || !isOwner) {
+          setOwner(false);
+          setPending([]);
+          return;
+        }
+        setOwner(true);
+        await loadPending();
+      }, 0);
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
   async function createBooking() {
     if (!supabase) return notify('Supabase belum disambungkan. Isi .env.local dahulu.');
     if (!name.trim() || !wa.trim()) return notify('Isi nama dan WhatsApp.');
@@ -236,33 +287,54 @@ if (allSessionsError) {
     setCheckout(null); notify('Bukti pembayaran berhasil dikirim. Menunggu verifikasi Owner.'); refresh();
   }
   async function ownerLogin() {
-    if (!supabase) return notify('Supabase belum disambungkan.');
+    if (!supabase) return notify('Supabase belum tersambung.');
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return notify(error.message);
-    const { data } = await supabase.rpc('is_owner'); if (!data) { await supabase.auth.signOut(); return notify('Akun ini bukan Owner.') }
-    setOwner(true); notify('Login Owner berhasil.'); loadPending();
+    const { data, error: roleError } = await supabase.rpc('is_owner');
+    if (roleError || !data) {
+      await supabase.auth.signOut();
+      setOwner(false);
+      setPending([]);
+      return notify('Akun ini bukan Owner atau hak akses Owner belum tersedia.');
+    }
+    setOwner(true);
+    notify('Login Owner berhasil.');
+    await loadPending();
   }
-  async function loadPending()
-  
-  
-  { if (!supabase) return; const { data, error } = await supabase.from('bookings').select('*').eq('status', 'MENUNGGU_VERIFIKASI').order('created_at'); if (error) notify(error.message); setPending((data || []) as Booking[]) }
+
+  async function loadPending() {
+    if (!supabase) return notify('Supabase belum tersambung.');
+    const { data: role, error: roleError } = await supabase.rpc('is_owner');
+    if (roleError || !role) {
+      setPending([]);
+      return notify('Akses ditolak. Login menggunakan akun Owner.');
+    }
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('status', 'MENUNGGU_VERIFIKASI')
+      .order('created_at', { ascending: true });
+    if (error) return notify('Gagal memuat pembayaran: ' + error.message);
+    setPending((data || []) as Booking[]);
+    notify('Daftar pembayaran berhasil diperbarui.');
+  }
 
   async function openPayments() {
-  await loadPending();
-
-  const target = document.getElementById('owner-payments');
-
-  if (!target) {
-    return notify('Daftar pembayaran tidak ditemukan!');
+    await loadPending();
+    document.getElementById('owner-pending-payments')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center'
+    });
   }
-
-  target.scrollIntoView({
-    behavior: 'smooth',
-    block: 'center'
-  });
-}
   async function viewProof(path: string) { if (!supabase) return; const { data, error } = await supabase.storage.from('payment-proofs').createSignedUrl(path, 90); if (error) return notify(error.message); window.open(data.signedUrl, '_blank', 'noopener,noreferrer') }
-  async function verify(id: string) { if (!supabase) return; const { error } = await supabase.rpc('owner_verify_booking', { p_booking_id: id }); if (error) return notify(error.message); notify('Booking dikonfirmasi LUNAS.'); loadPending(); refresh() }
+  async function verify(id: string) {
+    if (!supabase) return;
+    const { error } = await supabase.rpc('owner_verify_booking', { p_booking_id: id });
+    if (error) return notify('Gagal verifikasi: ' + error.message);
+    notify('Booking dikonfirmasi LUNAS.');
+    await loadPending();
+    await refresh();
+  }
   async function signOut() { await supabase?.auth.signOut(); setOwner(false) }
 
 async function addOwnerBooking() {
@@ -307,11 +379,6 @@ async function addOwnerBooking() {
   const available = session ? Math.max(0, session.capacity - occupied) : 0;
   const percent = session && session.capacity > 0 ? Math.min(100, (occupied / session.capacity) * 100) : 0;
   const own = owner;
-  const visibleOwnerSessions = ownerSessions.filter((s) =>
-    sessionView === 'ARCHIVED' ? s.status === 'ARCHIVED' : s.status !== 'ARCHIVED'
-  );
-  const activeSessionCount = ownerSessions.filter((s) => s.status !== 'ARCHIVED').length;
-  const archivedSessionCount = ownerSessions.filter((s) => s.status === 'ARCHIVED').length;
   if (!supabaseReady) return <main className="page"><header className="top"><div className="brand">BADMINGTONG</div></header><section className="panel setup"><p className="eyebrow">ONLINE SETUP</p><h1>Hubungkan Supabase dulu.</h1><p>Buat project Supabase, jalankan SQL di folder <code>supabase/schema.sql</code>, lalu salin URL dan publishable/anon key ke file <code>.env.local</code>.</p><p>Lihat README untuk panduan tahap demi tahap. Jangan pernah memasukkan service-role key ke browser.</p></section></main>;
   return <main className="page">
     <header className="top"><div className="brand"><span className="ball">🏸</span> BADMINGTONG</div>
@@ -350,7 +417,27 @@ async function addOwnerBooking() {
     <div className="hero-grid"><section className="panel hero"><p className="eyebrow">BADMINTON THURSDAY</p><h1>Gas main.<br /><span>Slot terbatas.</span></h1><p>Booking pemain untuk sesi badminton. First come, first served — bayar {rupiah(session?.price || 15000)} untuk mengamankan slot.</p><div className="metrics"><div><b>{occupied}</b><small>Sudah booking</small></div><div><b>{available}</b><small>Sisa slot</small></div><div><b>{rupiah(session?.price || 15000)}</b><small>Per pemain</small></div></div></section>
       <section className="panel next"><p className="eyebrow">NEXT SESSION</p><h2>{session ? dateText(session.session_date) : 'Belum ada sesi'}</h2><p>{session ? `${session.start_time.slice(0, 5)}–${session.end_time.slice(0, 5)} · ${session.location}` : 'Owner belum membuat sesi OPEN.'}</p><div className="bar"><i style={{ width: `${percent}%` }} /></div><div className="progress"><span>{occupied} / {session?.capacity || 0} terisi</span><span>{available} slot tersedia</span></div></section></div>
     {!own ? <><section className="panel booking"><h2>Booking pemain</h2><div className="fields"><label>Nama<input value={name} onChange={e => setName(e.target.value)} placeholder="Contoh: Lazio" maxLength={80} /></label><label>WhatsApp<input value={wa} onChange={e => setWa(e.target.value)} placeholder="08xxxxxxxxxx" maxLength={25} /></label></div><button className="primary wide" disabled={busy || !session || available < 1} onClick={createBooking}>{busy ? 'MEMPROSES...' : `BOOKING & LANJUT BAYAR — ${rupiah(session?.price || 15000)}`}</button><p className="hint">Slot di-hold 10 menit setelah booking dibuat.</p></section></> : null}
-    {own && pending.length > 0 ? <section className="panel booking"><h2>Pembayaran menunggu verifikasi</h2>{pending.map(b => <div className="pending" key={b.id}><div><b>{b.name}</b><small>{b.booking_code} · {b.whatsapp} · {rupiah(b.amount)}</small>{b.proof_path ? <button className="ghost" onClick={() => viewProof(b.proof_path!)}>LIHAT BUKTI</button> : <small>Bukti belum tersedia</small>}</div><button className="primary" onClick={() => verify(b.id)}>LUNAS</button></div>)}</section> : null}
+    {own ? (
+      <section className="panel booking" id="owner-pending-payments">
+        <h2>Pembayaran menunggu verifikasi</h2>
+        <button className="ghost wide" onClick={loadPending}>MUAT ULANG PEMBAYARAN</button>
+        {pending.length > 0 ? pending.map(b => (
+          <div className="pending" key={b.id}>
+            <div>
+              <b>{b.name}</b>
+              <small>{b.booking_code} · {b.whatsapp} · {rupiah(b.amount)}</small>
+              {b.payment_method ? <small>Metode: {b.payment_method}</small> : null}
+              {b.proof_path ? (
+                <button className="ghost" onClick={() => viewProof(b.proof_path!)}>LIHAT BUKTI</button>
+              ) : <small>Bukti belum tersedia</small>}
+            </div>
+            <button className="primary" onClick={() => verify(b.id)}>LUNAS</button>
+          </div>
+        )) : (
+          <p className="hint">Belum ada pembayaran yang menunggu verifikasi.</p>
+        )}
+      </section>
+    ) : null}
     
 <section className="panel participants" id="owner-payments">
   <h2>Daftar pemain & status pembayaran</h2>
@@ -421,25 +508,27 @@ async function addOwnerBooking() {
   Buka, tutup, dan atur kapasitas sesi badminton.
 </p>
 
-<div className="fields">
+<div className="fields" style={{ margin: '12px 0' }}>
   <button
     type="button"
-    className={sessionView === 'ACTIVE' ? 'primary' : 'ghost'}
-    onClick={() => setSessionView('ACTIVE')}
+    className={showArchivedSessions ? 'ghost' : 'primary'}
+    onClick={() => setShowArchivedSessions(false)}
   >
-    SESI AKTIF ({activeSessionCount})
+    SESI AKTIF ({ownerSessions.filter(s => s.status !== 'ARCHIVED').length})
   </button>
   <button
     type="button"
-    className={sessionView === 'ARCHIVED' ? 'primary' : 'ghost'}
-    onClick={() => setSessionView('ARCHIVED')}
+    className={showArchivedSessions ? 'primary' : 'ghost'}
+    onClick={() => setShowArchivedSessions(true)}
   >
-    ARSIP ({archivedSessionCount})
+    ARSIP ({ownerSessions.filter(s => s.status === 'ARCHIVED').length})
   </button>
 </div>
 
-{visibleOwnerSessions.length > 0 ? (
-  visibleOwnerSessions.map((s) => (
+{ownerSessions.filter(s => showArchivedSessions ? s.status === 'ARCHIVED' : s.status !== 'ARCHIVED').length > 0 ? (
+  ownerSessions
+    .filter(s => showArchivedSessions ? s.status === 'ARCHIVED' : s.status !== 'ARCHIVED')
+    .map((s) => (
     <div className="player" key={s.id}>
       <div>
         <b>
@@ -454,7 +543,7 @@ async function addOwnerBooking() {
           )}
         </b>
         <p className="hint">
-          {s.start_time.slice(0, 5)}–{s.end_time.slice(0, 5)} · {s.location}
+          {s.start_time}–{s.end_time} · {s.location}
         </p>
         <p className="hint">
           Kuota: {s.capacity} orang · Status: {s.status}
@@ -472,7 +561,7 @@ async function addOwnerBooking() {
               <button
                 className="ghost"
                 disabled={savingSession}
-                onClick={() => updateOwnerSession(s, 'OPEN', s.capacity + 2)}
+                onClick={() => updateOwnerSession(s, s.status === 'OPEN' ? 'OPEN' : 'OPEN', s.capacity + 2)}
               >
                 TAMBAH 2 SLOT
               </button>
@@ -496,7 +585,7 @@ async function addOwnerBooking() {
   ))
 ) : (
   <p className="hint">
-    {sessionView === 'ARCHIVED' ? 'Belum ada sesi yang diarsipkan.' : 'Belum ada sesi aktif.'}
+    {showArchivedSessions ? 'Belum ada sesi yang diarsipkan.' : 'Belum ada sesi aktif.'}
   </p>
 )}
 
